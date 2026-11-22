@@ -1,17 +1,22 @@
+
 name: DailyDev Journal
 
 on:
   schedule:
-    # 00:05 Asia/Colombo (UTC+05:30). Scheduled runs can be delayed.
+    # 00:05 Sri Lanka time (UTC+05:30)
     - cron: '35 18 * * *'
+
   workflow_dispatch:
+
   push:
-    branches: [main]
+    branches:
+      - main
     paths-ignore:
       - 'site/data/quotes.json'
 
 permissions:
   contents: write
+  actions: read
   pages: write
   id-token: write
 
@@ -22,24 +27,30 @@ concurrency:
 jobs:
   update-and-deploy:
     runs-on: ubuntu-latest
+
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+
     steps:
+      # STEP 1: Checkout repository
       - name: Checkout default branch
         uses: actions/checkout@v4
         with:
           persist-credentials: true
 
+      # STEP 2: Setup Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: Update journal (scheduled or manual only)
+      # STEP 3: Update journal
+      - name: Update journal
         if: github.event_name != 'push'
         run: python update.py
 
+      # STEP 4: Commit journal changes
       - name: Commit journal update
         if: github.event_name != 'push'
         env:
@@ -47,27 +58,66 @@ jobs:
           COMMIT_EMAIL: ${{ vars.COMMIT_EMAIL }}
         run: |
           if [ -z "$COMMIT_NAME" ] || [ -z "$COMMIT_EMAIL" ]; then
-            echo 'Set repository variables COMMIT_NAME and COMMIT_EMAIL.' >&2
+            echo "Missing COMMIT_NAME or COMMIT_EMAIL"
             exit 1
           fi
+
           git config user.name "$COMMIT_NAME"
           git config user.email "$COMMIT_EMAIL"
+
           git add site/data/quotes.json
+
           if ! git diff --cached --quiet; then
             git commit -m "data: add daily journal entry"
             git push
           else
-            echo 'No new entry; skipping commit.'
+            echo "No new entry; skipping commit."
           fi
 
+      # STEP 5: Configure GitHub Pages
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
+      # STEP 6: Upload website artifact
       - name: Upload site
         uses: actions/upload-pages-artifact@v4
         with:
           path: ./site
 
+      # STEP 7: Verify artifact availability
+      - name: Verify Pages artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          echo "Checking Pages artifact..."
+
+          for attempt in 1 2 3 4 5; do
+            echo "Attempt $attempt of 5"
+
+            if gh api \
+              "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts" \
+              --jq '.artifacts[].name' | grep -Fxq "github-pages"; then
+
+              echo "Pages artifact found successfully!"
+              exit 0
+            fi
+
+            echo "Artifact not visible yet."
+            sleep 15
+          done
+
+          echo "ERROR: Pages artifact not found."
+          exit 1
+
+      # STEP 8: Deploy website
       - name: Deploy to Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+      # STEP 9: Display deployment URL
+      - name: Deployment summary
+        run: |
+          echo "GitHub Pages deployment completed!"
+          echo "URL: ${{ steps.deployment.outputs.page_url }}"
